@@ -79,7 +79,7 @@ void gen_rand_sequence( char* b, int size ) {
  *  int minimum desired mismatches
  */
 __global__
-void check_sequence( char* d_bc, char* d_seq, int* d_N, int* d_pass, int LEN, int diffs ) {
+void check_sequence( char* d_seq, char* d_pool, int pool_size, int* d_pass, int LEN, int diffs ) {
     
     // to save some atomicAdd time on the slower global memory
     __shared__ int sh_pass;
@@ -96,10 +96,10 @@ void check_sequence( char* d_bc, char* d_seq, int* d_N, int* d_pass, int LEN, in
     __syncthreads();
     
     // overflow control
-    if (ix < *d_N) {
+    if (ix < pool_size) {
         // check strings letter by letter and indicate differences
         for (int j = 0; j < LEN; j++) {
-            if (d_bc[j] != d_seq[ix*LEN + j]) {
+            if (d_seq[j] != d_pool[ix*LEN + j]) {
                 if (++n_diff == diffs) {
                     atomicAdd(&sh_pass, 1); 
                     break;
@@ -113,20 +113,20 @@ void check_sequence( char* d_bc, char* d_seq, int* d_N, int* d_pass, int LEN, in
         atomicAdd(d_pass, sh_pass);
 }
 
-/* populate_h_bc generates random sequences and puts
+/* populate_h_seq generates random sequences and puts
  * them in a single string
  * Argumenst:
  *  char* to a target string
  *  int desired sequence lenght
  *  int desired number of sequences
  */
-void populate_h_bc( char* h_bc, int LEN, int N ) {
+void populate_h_seq( char* h_seq, int LEN, int N ) {
     // delete contents of the target string
-    memset(h_bc, 0, N*LEN*sizeof(char));
+    memset(h_seq, 0, N*LEN*sizeof(char));
     
     // generate random sequenes
     for (int i = 0; i < N; i++)
-        gen_rand_sequence(h_bc+i*LEN, LEN);
+        gen_rand_sequence(h_seq+i*LEN, LEN);
 }
     
 /* main expects 3 command line argumenst
@@ -135,6 +135,7 @@ void populate_h_bc( char* h_bc, int LEN, int N ) {
  *  int number of sequences to generate
  */
 int main( int argc, char** argv ) {
+    // change this according to available memory
     int CHUNK = 100000;
     
     if (argc < 3) {
@@ -145,34 +146,30 @@ int main( int argc, char** argv ) {
 // used for timing portions of the code
 // compile with -DTIMEIT to turn this on
 #ifdef TIMEIT
-    clock_t t0;
-    clock_t t1;
+    clock_t t0,t1;
 #endif
     // process command line
     int LEN = atoi(argv[1]);
     int min_diff = atoi(argv[2]);
     int N = atoi(argv[3]);  // up to 1M, if more change the kernel parameters below
     
-    // pool of valid sequences
-    char* d_seq;    // free later
-    CudaSafeCall( cudaMalloc((void**)&d_seq, N*LEN*sizeof(char)) );
-    
-    CudaSafeCall( cudaMemset(d_seq, 0, N*LEN*sizeof(char)) );
+    // pool of valid sequences on device
+    char* d_pool;    // free later
+    CudaSafeCall( cudaMalloc((void**)&d_pool, N*LEN*sizeof(char)) );
+    CudaSafeCall( cudaMemset(d_pool, 0, N*LEN*sizeof(char)) );
     
     // current number of valid sequences in pool
-    int h_N = 0;
-    int* d_N;       // free later
-    CudaSafeCall( cudaMalloc((void**)&d_N, sizeof(int)) );
+    int pool_size = 0;
     
     // pass criteria variables
-    int h_pass = 0;
+    int h_pass = 0; // place-holder for d_pass on host
     int* d_pass;    // free later
     CudaSafeCall( cudaMalloc((void**)&d_pass, sizeof(int)) );
     
     // barcodes pool
-    char* h_bc = (char*)calloc(CHUNK*LEN, sizeof(char));    // free later
-    char* d_bc; // free later
-    CudaSafeCall( cudaMalloc((void**)&d_bc, CHUNK*LEN*sizeof(char)) );
+    char* h_seq = (char*)calloc(CHUNK*LEN, sizeof(char));    // free later
+    char* d_seq; // free later
+    CudaSafeCall( cudaMalloc((void**)&d_seq, CHUNK*LEN*sizeof(char)) );
     
     // temporary sequence for printing
     char tmp_seq[LEN+1];
@@ -181,14 +178,15 @@ int main( int argc, char** argv ) {
     bool done = false;
     int chunk_counter = 0;
     while (!done) {
-        populate_h_bc(h_bc, LEN, CHUNK);
-        CudaSafeCall( cudaMemcpy(d_bc, h_bc, CHUNK*LEN*sizeof(char), cudaMemcpyHostToDevice) );
+        populate_h_seq(h_seq, LEN, CHUNK);
+        
+        // copy sequences to device
+        CudaSafeCall( cudaMemcpy(d_seq, h_seq, CHUNK*LEN*sizeof(char), cudaMemcpyHostToDevice) );
         
         // seed the data
-        if (h_N == 0) {
-            h_N = 1;
-            CudaSafeCall( cudaMemcpy(d_seq, h_bc, LEN*sizeof(char), cudaMemcpyHostToDevice) );
-            CudaSafeCall( cudaMemcpy(d_N, &h_N, sizeof(int), cudaMemcpyHostToDevice) );
+        if (pool_size == 0) {
+            pool_size = 1;
+            CudaSafeCall( cudaMemcpy(d_pool, h_seq, LEN*sizeof(char), cudaMemcpyHostToDevice) );
         }
         
         // iterate over all the random sequences
@@ -201,35 +199,31 @@ int main( int argc, char** argv ) {
 #ifdef TIMEIT
             t0 = clock();
 #endif
-            check_sequence<<<1024,1024>>>( d_bc+i*LEN, d_seq, d_N, d_pass, LEN, min_diff );
+            check_sequence<<<1024,1024>>>( d_seq+i*LEN, d_pool, pool_size, d_pass, LEN, min_diff );
 #ifdef TIMEIT
             t1 = clock();
 #endif
             CudaCheckError();
             
-            // check d_pass and d_N, put them in h_pass and h_N
+            // check d_pass put it in h_pass
             CudaSafeCall( cudaMemcpy(&h_pass, d_pass, sizeof(int), cudaMemcpyDeviceToHost) );
-            CudaSafeCall( cudaMemcpy(&h_N, d_N, sizeof(int), cudaMemcpyDeviceToHost) );
             
             // valid sequence?
-            if (h_pass == h_N) {
+            if (h_pass == pool_size) {
                 // output
-                memcpy(tmp_seq, h_bc+i*LEN, LEN*sizeof(char));
-                fprintf(stdout,"%i\t%i\t%s", i + chunk_counter, h_N, tmp_seq);
+                memcpy(tmp_seq, h_seq+i*LEN, LEN*sizeof(char));
+                fprintf(stdout,"%i\t%i\t%s", i + chunk_counter, pool_size, tmp_seq);
 #ifdef TIMEIT
-                fprintf(stdout, "\t%lf", (double)(t1-t0)/CLOCKS_PER_SEC);
+                fprintf(stdout, "\t%f", (float)(t1-t0)/CLOCKS_PER_SEC);
 #endif
                 fprintf(stdout, "\n");
                 
                 // reached desired nimber of sequences?
-                if (h_N < N) {
+                if (pool_size < N) {
                     
-                    // copy sequence to the end of the d_seq string
-                    CudaSafeCall( cudaMemcpy(d_seq+h_N*LEN, h_bc+i*LEN, LEN*sizeof(char), cudaMemcpyHostToDevice) );
-                    
-                    // set new value for d_N
-                    h_N++;
-                    CudaSafeCall( cudaMemcpy(d_N, &h_N, sizeof(int), cudaMemcpyHostToDevice) );
+                    // copy sequence to the end of the d_pool string and increment pool_size
+                    CudaSafeCall( cudaMemcpy(d_pool+pool_size*LEN, h_seq+i*LEN, LEN*sizeof(char), cudaMemcpyHostToDevice) );
+                    pool_size++;
                 } else {
                     done = true;
                     break;
@@ -240,11 +234,10 @@ int main( int argc, char** argv ) {
     }
 
     // cleanup
+    cudaFree(d_pool);
     cudaFree(d_seq);
-    cudaFree(d_bc);
     cudaFree(d_pass);
-    cudaFree(d_N);
-    free(h_bc);
+    free(h_seq);
     
     return 0;
 }
