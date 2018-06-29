@@ -12,6 +12,9 @@
 #include <cstdlib>
 #include <ctime>
 
+// uncomment or compile with -DTIMEIT to enable benchmarking
+//#define TIMEIT
+
 /* gen_rand_sequence generates a random DNA sequence
  * of given length
  * Arguments:
@@ -51,14 +54,14 @@ char* gen_rand_sequence( size_t size ) {
  * true if the sequence in question passes the test
  * false otherwise
  */
-bool check_barcode( char* b, char** seqs, size_t LEN, size_t N_seqs, uint8_t diffs ) {
+bool check_barcode( char* b, char** seqs, size_t LEN, size_t pool_size, uint8_t diffs ) {
     uint8_t d = 0;
     size_t passed = 0;
     
-    if (N_seqs == 0)
+    if (pool_size == 0)
         return true;
     
-    for (size_t i = 0; i < N_seqs; i++) {
+    for (size_t i = 0; i < pool_size; i++) {
         d = 0;
         for (size_t j = 0; j < LEN; j++) {
             if (b[j] != seqs[i][j]) {
@@ -70,7 +73,7 @@ bool check_barcode( char* b, char** seqs, size_t LEN, size_t N_seqs, uint8_t dif
         }
     }
     
-    if (passed == N_seqs)
+    if (passed == pool_size)
         return true;
     
     return false;
@@ -82,8 +85,12 @@ bool check_barcode( char* b, char** seqs, size_t LEN, size_t N_seqs, uint8_t dif
  *  int desired number of sequences
  */
 int main( int argc, char** argv ) {
+#ifdef TIMEIT
+    clock_t t0, t1;
+#endif
+    
     char* tmp;
-    size_t current_N = 0;
+    size_t pool_size = 0;
     
     if (argc < 3) {
         fprintf(stderr, "\n%s: Insufficient arguments\n\n", argv[0]);
@@ -97,16 +104,26 @@ int main( int argc, char** argv ) {
     char** seqs = (char**)calloc(N,sizeof(char*));
     
     int counter = 0;
-    while (current_N < N) {
+    while (pool_size < N) {
         tmp = gen_rand_sequence(LEN);
         counter++;
-        if (check_barcode(tmp, seqs, LEN, current_N, min_diff)) {
-            seqs[current_N] = tmp;
-            current_N++;
+#ifdef TIMEIT
+        t0 = clock();
+#endif
+        if (check_barcode(tmp, seqs, LEN, pool_size, min_diff)) {
+#ifdef TIMEIT
+            t1 = clock();
+#endif
+            seqs[pool_size] = tmp;
+            pool_size++;
             
             // output total number of sequences tested, current number of
             // sequences identified and the actual sequence
-            fprintf(stdout,"%i\t%lu\t%s\n", counter, current_N, tmp);
+            fprintf(stdout,"%i\t%lu\t%s", counter, pool_size, tmp);
+#ifdef TIMEIT
+            fprintf(stdout, "\t%f", (float)(t1-t0)/CLOCKS_PER_SEC);
+#endif
+            fprintf(stdout,"\n");
         }
     }
 
