@@ -73,13 +73,13 @@ void gen_rand_sequence( char* b, int size ) {
  * Arguments:
  *  device char* to a sequence to be chacked
  *  device char* to a pool of sequences to check against
- *  device int* to number of sequences in the pool
  *  device int* to number of pool sequences passed
+ *  int to number of sequences in the pool
  *  int sequence length
  *  int minimum desired mismatches
  */
 __global__
-void check_sequence( char* d_seq, char* d_pool, int pool_size, int* d_pass, int LEN, int diffs ) {
+void check_sequence( char* d_seq, char* d_pool, int* d_pass, int pool_size, int LEN, int diffs ) {
     
     // to save some atomicAdd time on the slower global memory
     __shared__ int sh_pass;
@@ -199,7 +199,7 @@ int main( int argc, char** argv ) {
 #ifdef TIMEIT
             t0 = clock();
 #endif
-            check_sequence<<<1024,1024>>>( d_seq+i*LEN, d_pool, pool_size, d_pass, LEN, min_diff );
+            check_sequence<<<1024,1024>>>( d_seq+i*LEN, d_pool, d_pass, pool_size, LEN, min_diff );
 #ifdef TIMEIT
             t1 = clock();
 #endif
