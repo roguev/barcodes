@@ -1,9 +1,11 @@
-/* ser_barcodes
+/* ser_barcodes.cc
  * computes a set of DNA sequences where each sequence in the set
- * differs from every other sequence by a minimum of given number
- * of nucleotides. THis is an interesting problem as it becomes more
+ * differs from every other sequence by a minimum of a given number
+ * of nucleotides. This is an interesting problem as it becomes more
  * difficult the larger the set becomes. This is the serial implementation
  * in C.
+ * compile:
+ *  g++ -O3 -std=c++11 -DTIMEIT ser_barcodes.cc -o ser_barcodes
  * Written by Assen Roguev, 2018
  */
 
@@ -11,6 +13,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <ctime>
+#include <random>
 
 // uncomment or compile with -DTIMEIT to enable benchmarking
 //#define TIMEIT
@@ -19,28 +22,23 @@
  * of given length
  * Arguments:
  *  size_t sequence length
+ *  std::uniform_int_distribution<int>& random number distrobution to sample from
+ *  std::default_random_engine& random number generator
  * Returns:
  *  char* to the generated sequence
  */ 
-inline char* gen_rand_sequence( uint16_t LEN ) {
+inline char* gen_rand_sequence( uint16_t LEN, std::uniform_int_distribution<int>& dist, std::default_random_engine& gen ) {
     const char charset[] = "ATGC";
     
-    // allocate output on the heap, \0 terminated
-    char* str = (char*)calloc(LEN+1, sizeof(char));
+    // allocate output on the heap, \0 terminated for printing
+    char* seq = (char*)calloc(LEN+1, sizeof(char));
+    uint8_t key;
     
-    // attempting to generate very random sequences
-    // so seeding the random generator every time the
-    // function is called
-    clock_t t = clock();
-    srand(t);
-    
-    if (LEN) {
-        for (uint16_t n = 0; n < LEN; n++) {
-            uint8_t key = rand() % (uint8_t) (sizeof charset - 1);
-            str[n] = charset[key];
-        }
+    for (uint16_t n = 0; n < LEN; n++) {
+        key = (uint8_t)dist(gen);
+        seq[n] = charset[key];
     }
-    return str;
+    return seq;
 }
 
 /* check_sequence checks a given sequence against a pool of sequences
@@ -85,10 +83,10 @@ inline bool check_barcode( char* b, char** seqs, uint16_t LEN, uint32_t pool_siz
  *  int desired number of sequences
  */
 int main( int argc, char** argv ) {
-#ifdef TIMEIT
+    #ifdef TIMEIT
     clock_t t0, t1, t2;
-#endif
-    
+    #endif
+
     char* tmp;
     uint32_t pool_size = 0;
     
@@ -104,28 +102,35 @@ int main( int argc, char** argv ) {
     char** seqs = (char**)calloc(N,sizeof(char*));
     
     uint32_t counter = 0;
-#ifdef TIMEIT
-        t0 = clock();
-#endif  
+    
+    // for random sequence generation
+    std::default_random_engine rng(clock());
+    std::uniform_int_distribution<int> rndist(0,3);
+    
+    #ifdef TIMEIT
+    t0 = clock();
+    #endif  
     
     while (pool_size < N) {
-        tmp = gen_rand_sequence(LEN);
+        tmp = gen_rand_sequence(LEN, rndist, rng);
         counter++;
-#ifdef TIMEIT
+        
+        #ifdef TIMEIT
         t1 = clock();
-#endif
+        #endif
         if (check_barcode(tmp, seqs, LEN, pool_size, min_diff)) {
-#ifdef TIMEIT
+            #ifdef TIMEIT
             t2 = clock();
-#endif
+            #endif
             seqs[pool_size] = tmp;
             pool_size++;
             
             // output total number of sequences tested, current number of
             // sequences identified and the actual sequence
-#ifdef TIMEIT
+            #ifdef TIMEIT
             fprintf(stdout, "%i\t%i\t%f\t%f\n", counter, pool_size, (float)(t2-t1)/CLOCKS_PER_SEC, (float)(t2-t0)/CLOCKS_PER_SEC);
-#endif
+            #endif
+            
             // output
             fprintf(stdout,"%s\n", tmp);
         }

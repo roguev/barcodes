@@ -1,8 +1,10 @@
-/* cu_barcodes
+/* cu_barcodes.cu
  * computes a set of DNA sequences where each sequence in the set
- * differs from every other sequence by a minimum of given number
- * of nucleotides. THis is an interesting problem as it becomes more
+ * differs from every other sequence by a minimum of a given number
+ * of nucleotides. This is an interesting problem as it becomes more
  * difficult the larger the set becomes. This is the CUDA C implementation
+ * compile:
+ *  nvcc -DTIMEIT -DCUDA_ERROR_CHECK -std=c++11 -lcuda cu_barcodes.cu -o cu_barcodes
  * Written by Assen Roguev, 2018
  */
 
@@ -10,6 +12,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <ctime>
+#include <random>
 
 // compile with -DCUDA_ERROR_CHECK toturn on error checking
 #define CudaCheckError()    __cudaCheckError( __FILE__, __LINE__ )
@@ -19,7 +22,7 @@
 //#define TIMEIT
 
 inline void __cudaCheckError( const char *file, const int line ) {
-#ifdef CUDA_ERROR_CHECK
+    #ifdef CUDA_ERROR_CHECK
     cudaError err = cudaGetLastError();
     if ( cudaSuccess != err ) {
         fprintf( stderr, "%s:%i : %s\n", cudaGetErrorString( err ) );
@@ -33,18 +36,18 @@ inline void __cudaCheckError( const char *file, const int line ) {
         fprintf( stderr, "%s:%i : %s\n", file, line, cudaGetErrorString( err ) );
         exit( -1 );
     }
-#endif
+    #endif
     return;
 }
 
 inline void __cudaSafeCall( cudaError err, const char *file, const int line ) {
-#ifdef CUDA_ERROR_CHECK
+    #ifdef CUDA_ERROR_CHECK
     if ( cudaSuccess != err ) {
         fprintf( stderr, "%s:%i : %s\n", file, line, cudaGetErrorString( err ) );
         
         exit( -1 );
     }
-#endif
+    #endif
     return;
 }
 
@@ -53,22 +56,17 @@ inline void __cudaSafeCall( cudaError err, const char *file, const int line ) {
  * Arguments:
  *  char* to hold the generated sequence
  *  int sequence length
+ *  std::uniform_int_distribution<int>& random distribution to sample from
+ *  std::default_random_engine& random number generator
  */ 
 
-inline void gen_rand_sequence( char* b, int size ) {
+inline void gen_rand_sequence( char* seq, uint16_t LEN, std::uniform_int_distribution<int>& rn_dist, std::default_random_engine& rn_gen ) {
     const char charset[] = "ATGC";
+    uint8_t key;
     
-    // attempting to generate very random sequences
-    // so seeding the random generator every time the
-    // function is called
-    clock_t t = clock();
-    srand(t);
-    
-    if (size) {
-        for (int n = 0; n < size; n++) {
-            int key = rand() % (int) (sizeof charset - 1);
-            b[n] = charset[key];
-        }
+    for (uint16_t n = 0; n < LEN; n++) {
+        key = (uint8_t)rn_dist(rn_gen);
+        seq[n] = charset[key];
     }
 }
 
@@ -123,24 +121,27 @@ void check_sequence( char* d_seq, char* d_pool, uint32_t* d_pass, uint32_t pool_
  *  char* to a target string
  *  int desired sequence lenght
  *  int desired number of sequences
+ *  std::uniform_int_distribution<int>& random distribution to sample from
+ *  std::default_random_engine& random number generator
  */
-void populate_h_seq( char* h_seq, uint16_t LEN, uint32_t N ) {
-#ifdef TIMEIT
+void populate_h_seq( char* h_seq, uint16_t LEN, uint32_t N, std::uniform_int_distribution<int>& rn_dist, std::default_random_engine& rn_gen ) {    
+    #ifdef TIMEIT
     clock_t t0, t1;
     t0 = clock();
-#endif
+    #endif
+    
     // delete contents of the target string
     memset(h_seq, 0, N*LEN*sizeof(char));
     
     // generate random sequenes
     for (uint32_t i = 0; i < N; i++)
-        gen_rand_sequence(h_seq+i*LEN, LEN);
+        gen_rand_sequence(h_seq+i*LEN, LEN, rn_dist, rn_gen);
     
-#ifdef TIMEIT
+    #ifdef TIMEIT
     t1 = clock();
-    fprintf(stdout, ">> %f\n", (float)(t1-t0)/CLOCKS_PER_SEC);
-    fflush(stdout);
-#endif
+    fprintf(stderr, "populate_h_seq\t%f\n", (float)(t1-t0)/CLOCKS_PER_SEC);
+    fflush(stderr);
+    #endif
 }
     
 /* main expects 3 command line argumenst
@@ -148,7 +149,7 @@ void populate_h_seq( char* h_seq, uint16_t LEN, uint32_t N ) {
  *  int minimum number of mismatches
  *  int number of sequences to generate
  */
-int main( int argc, char** argv ) {
+int main( int argc, char** argv ) {    
     // change this according to available memory
     uint32_t CHUNK = 10000;
     
@@ -157,15 +158,20 @@ int main( int argc, char** argv ) {
         exit(1);
     }
 
-// used for timing portions of the code
-// compile with -DTIMEIT to turn this on
-#ifdef TIMEIT
+    // used for timing portions of the code
+    // compile with -DTIMEIT to turn this on
+    #ifdef TIMEIT
     clock_t t0,t1,t2;
-#endif
+    #endif
+    
     // process command line
     uint16_t LEN = (uint16_t)atoi(argv[1]);
     uint16_t min_diff = (uint16_t)atoi(argv[2]);
     uint32_t N = (uint32_t)atoi(argv[3]);  // up to 1M, if more change the kernel parameters below
+    
+    // for generating random sequence
+    std::default_random_engine rn_gen(clock());
+    std::uniform_int_distribution<int> rn_dist(0,3);
     
     // pool of valid sequences on device
     char* d_pool;    // free later
@@ -189,15 +195,15 @@ int main( int argc, char** argv ) {
     char tmp_seq[LEN+1];
     memset(tmp_seq,0,(LEN+1)*sizeof(char));
     
-#ifdef TIMEIT
+    #ifdef TIMEIT
     t0 = clock();
     uint32_t chunk_counter = 0;
-#endif
+    #endif
     
     bool done = false;
     while (!done) {
        // generate some sequences to look at
-        populate_h_seq(h_seq, LEN, CHUNK);
+        populate_h_seq(h_seq, LEN, CHUNK, rn_dist, rn_gen);
         
         // copy sequences to device
         CudaSafeCall( cudaMemcpy(d_seq, h_seq, CHUNK*LEN*sizeof(char), cudaMemcpyHostToDevice) );
@@ -214,17 +220,16 @@ int main( int argc, char** argv ) {
             // reset d_pass
             CudaSafeCall( cudaMemset(d_pass, 0, sizeof(uint32_t)) );
             
-#ifdef TIMEIT
+            #ifdef TIMEIT
             t1 = clock();
-#endif
+            #endif
             
             // launch kernel, initialize for a pool of 1024x1024 sequences
             check_sequence<<<1024,1024>>>( d_seq+i*LEN, d_pool, d_pass, pool_size, LEN, min_diff );
-            
-#ifdef TIMEIT
-            t2 = clock();
-#endif
             CudaCheckError();
+            #ifdef TIMEIT
+            t2 = clock();
+            #endif
             
             // check d_pass put it in h_pass
             CudaSafeCall( cudaMemcpy(&h_pass, d_pass, sizeof(uint32_t), cudaMemcpyDeviceToHost) );
@@ -233,9 +238,10 @@ int main( int argc, char** argv ) {
             if (h_pass == pool_size) {
                 memcpy(tmp_seq, h_seq+i*LEN, LEN*sizeof(char));
                 
-#ifdef TIMEIT
+                #ifdef TIMEIT
                 fprintf(stdout,"%i\t%i\t%f\t%f\n", i + chunk_counter, pool_size, (float)(t2-t1)/CLOCKS_PER_SEC, (float)(t2-t0)/CLOCKS_PER_SEC);
-#endif
+                #endif
+                
                 // output sequence
                 fprintf(stdout,"%s\n", tmp_seq);
                 
@@ -252,9 +258,9 @@ int main( int argc, char** argv ) {
             }
         }
         
-#ifdef TIMEIT
+        #ifdef TIMEIT
         chunk_counter += CHUNK;
-#endif
+        #endif
     }
 
     // cleanup
